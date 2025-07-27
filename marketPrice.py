@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from phi.agent import Agent
 from phi.model.google import Gemini
 from phi.tools.tavily import TavilyTools
@@ -10,31 +10,40 @@ from io import BytesIO
 import google.generativeai as genai
 from dotenv import load_dotenv
 import re
+from collections import defaultdict
 
 # Load environment variables
 load_dotenv()
 
 class AgriculturalCommodityPriceFetcher:
     """
-    An improved class to fetch agricultural commodity prices with more reliable parsing,
-    enhanced generative AI image analysis, and a robust fallback mechanism.
+    An improved class to fetch agricultural commodity prices with multiple sources,
+    latest date tracking, and robust fallback mechanisms.
     """
     
     SYSTEM_PROMPT = """You are a highly specialized agricultural price analyst for Indian markets.
-Your goal is to provide the most accurate price in INR per **KILOGRAM (kg)**.
+Your goal is to provide the most accurate price in INR per **KILOGRAM (kg)** from multiple official sources.
 
 Follow these steps precisely:
-1. Search for the CURRENT wholesale/mandi price for the commodity from official sources only (eNAM, Agmarknet, APMC data, government reports).
-2. The prices you find will likely be in **INR per Quintal (100 kg)**. This is the standard unit in Indian mandis.
-3. **You MUST identify the original price and its unit (e.g., 2500 INR per Quintal).**
-4. **You MUST convert this price to INR per kg.** For a price per quintal, you will divide by 100.
-5. Provide your final response in the following strict format. Do NOT add any other text or explanations.
+1. Search for the CURRENT/latest wholesale/mandi price for the commodity from at least 2-4 official sources (eNAM, Agmarknet, APMC data, government reports).
+2. For each source, extract:
+   - The price (likely in INR per Quintal (100 kg))
+   - The date of the price data
+   - The source name
+3. **For each source, convert the price to INR per kg** (divide quintal price by 100).
+4. Identify the most recent date among all sources.
+5. Provide your final response in the following strict format:
 
-**FOR A SINGLE PRICE:**
-PRICE_PER_KG: [price_in_kg] | ORIGINAL_PRICE: [original_price] per Quintal | SOURCE: [source_name] | DATE: [date]
+**FOR SINGLE PRICES FROM MULTIPLE SOURCES:**
+PRICE_PER_KG: [price1_in_kg] | SOURCE: [source1] | DATE: [date1]
+PRICE_PER_KG: [price2_in_kg] | SOURCE: [source2] | DATE: [date2]
+...
+LATEST_DATE: [most_recent_date]
 
-**FOR A PRICE RANGE:**
-MIN_PRICE_KG: [min_price_in_kg] | MAX_PRICE_KG: [max_price_in_kg] | ORIGINAL_RANGE: [min_original]-[max_original] per Quintal | SOURCE: [source_name] | DATE: [date]
+**FOR PRICE RANGES:**
+MIN_PRICE_KG: [min_price_in_kg] | MAX_PRICE_KG: [max_price_in_kg] | SOURCE: [source] | DATE: [date]
+...
+LATEST_DATE: [most_recent_date]
 
 If after a thorough search, no current data is found from official sources, return the single phrase: 'Not available'.
 """
@@ -120,18 +129,46 @@ Overall Assessment: [A brief one-sentence summary of the quality]
             return {"error": "Failed to parse quality analysis response from the AI."}
         return quality_data
 
-    def _parse_price_response(self, response_text: str) -> Optional[Dict[str, str]]:
-        """Parses the new, structured response from the price agent."""
-        data = {}
-        try:
-            parts = [p.strip() for p in response_text.split('|')]
-            for part in parts:
-                if ':' in part:
-                    key, value = part.split(':', 1)
-                    data[key.strip()] = value.strip()
+    def _parse_price_response(self, response_text: str) -> Dict:
+        """Parses the response with multiple sources and dates."""
+        data = {
+            "prices": [],
+            "ranges": [],
+            "latest_date": None,
+            "sources": set()
+        }
+        
+        if "not available" in response_text.lower():
             return data
-        except Exception:
-            return None
+        
+        try:
+            # Split into individual price entries
+            entries = [entry.strip() for entry in response_text.split('\n') if entry.strip()]
+            
+            for entry in entries:
+                if entry.startswith("LATEST_DATE:"):
+                    data["latest_date"] = entry.split(":", 1)[1].strip()
+                    continue
+                
+                parts = [p.strip() for p in entry.split('|')]
+                entry_data = {}
+                for part in parts:
+                    if ':' in part:
+                        key, value = part.split(':', 1)
+                        entry_data[key.strip()] = value.strip()
+                
+                if "PRICE_PER_KG" in entry_data:
+                    data["prices"].append(entry_data)
+                    data["sources"].add(entry_data.get("SOURCE", "Unknown"))
+                elif "MIN_PRICE_KG" in entry_data and "MAX_PRICE_KG" in entry_data:
+                    data["ranges"].append(entry_data)
+                    data["sources"].add(entry_data.get("SOURCE", "Unknown"))
+            
+            return data
+            
+        except Exception as e:
+            print(f"Error parsing price response: {e}")
+            return data
 
     def fetch_price(self, commodity_name: str, quality_data: Optional[Dict[str, str]] = None) -> str:
         if not self.api_keys_configured: return "Error: API keys not configured properly"
@@ -143,72 +180,96 @@ Overall Assessment: [A brief one-sentence summary of the quality]
                 tools=[TavilyTools()],
             )
             
-            # Initial, more specific query
-            query = f"Current wholesale price for {commodity_name} in India from official sources"
+            # Initial query for multiple sources
+            query = f"Current wholesale prices for {commodity_name} in India from 2-4 official sources with dates"
             quality_grade = quality_data.get('Grade') if quality_data else None
             if quality_grade: query += f" for quality similar to Grade {quality_grade}"
             
             response = price_agent.run(query)
             response_text = str(response.content) if hasattr(response, 'content') else str(response)
 
-            # --- IMPROVEMENT: FALLBACK MECHANISM ---
-            # If the strict initial search fails, try a broader query to get a general price range.
+            # Fallback mechanism if initial search fails
             if "not available" in response_text.lower():
-                print("\nInitial search was too specific. Trying a broader query for a price range...")
-                alt_query = f"Latest mandi price range for {commodity_name} in India from Agmarknet or eNAM"
+                print("\nInitial search was too specific. Trying a broader query...")
+                alt_query = f"Latest mandi prices for {commodity_name} in India from any reliable sources"
                 alt_response = price_agent.run(alt_query)
                 alt_text = str(alt_response.content) if hasattr(alt_response, 'content') else str(alt_response)
-
-                # Use the fallback result only if it's successful
                 if "not available" not in alt_text.lower():
                     response_text = alt_text
+
+            parsed_data = self._parse_price_response(response_text)
             
-            # Check again after the potential fallback
-            if "not available" in response_text.lower():
+            if not parsed_data["prices"] and not parsed_data["ranges"]:
                 return f"Price information for '{commodity_name}' is not available from official sources at this time."
 
-            parsed_price = self._parse_price_response(response_text)
-            
-            if not parsed_price:
-                return f"Error: Could not parse price information from AI response: '{response_text}'"
-
             final_price_info = []
-
-            # Adjust price based on quality grade if available
-            if quality_grade:
-                base_price = 0.0
-                try:
-                    if "PRICE_PER_KG" in parsed_price:
-                        base_price = float(re.sub(r"[^\d.]", "", parsed_price["PRICE_PER_KG"]))
-                    elif "MIN_PRICE_KG" in parsed_price and "MAX_PRICE_KG" in parsed_price:
-                        min_p = float(re.sub(r"[^\d.]", "", parsed_price["MIN_PRICE_KG"]))
-                        max_p = float(re.sub(r"[^\d.]", "", parsed_price["MAX_PRICE_KG"]))
-                        base_price = (min_p + max_p) / 2
-                except (ValueError, KeyError):
-                    return f"Error: Could not extract a valid base price from response: {parsed_price}"
-
-                if base_price > 0:
-                    adjustment_factor = self.QUALITY_PRICE_FACTORS.get(quality_grade, 1.0)
-                    adjusted_price = base_price * adjustment_factor
-                    
-                    final_price_info.append(f"{adjusted_price:.2f} INR/kg (Adjusted for Grade {quality_grade})")
-                    final_price_info.append(f"Source: {parsed_price.get('SOURCE', 'N/A')}")
-                    final_price_info.append(f"Date: {parsed_price.get('DATE', 'N/A')}")
-                    if "ORIGINAL_PRICE" in parsed_price:
-                        final_price_info.append(f"Market Price (raw): {parsed_price['ORIGINAL_PRICE']}")
-                    elif "ORIGINAL_RANGE" in parsed_price:
-                         final_price_info.append(f"Market Range (raw): {parsed_price['ORIGINAL_RANGE']}")
-
-            # If no quality grade, return the direct price/range from the agent
-            else:
-                if "PRICE_PER_KG" in parsed_price:
-                    final_price_info.append(f"{parsed_price.get('PRICE_PER_KG', 'N/A')} INR/kg")
-                elif "MIN_PRICE_KG" in parsed_price and "MAX_PRICE_KG" in parsed_price:
-                     final_price_info.append(f"{parsed_price.get('MIN_PRICE_KG', 'N/A')} - {parsed_price.get('MAX_PRICE_KG', 'N/A')} INR/kg")
-                final_price_info.append(f"Source: {parsed_price.get('SOURCE', 'N/A')}")
-                final_price_info.append(f"Date: {parsed_price.get('DATE', 'N/A')}")
+            quality_grade = quality_data.get('Grade') if quality_data else None
+            
+            # Process individual prices from multiple sources
+            if parsed_data["prices"]:
+                prices = []
+                for price_data in parsed_data["prices"]:
+                    try:
+                        price_kg = float(re.sub(r"[^\d.]", "", price_data["PRICE_PER_KG"]))
+                        if quality_grade:
+                            price_kg *= self.QUALITY_PRICE_FACTORS.get(quality_grade, 1.0)
+                        prices.append((price_kg, price_data))
+                    except (ValueError, KeyError):
+                        continue
                 
-            return " | ".join(final_price_info)
+                if prices:
+                    avg_price = sum(p[0] for p in prices) / len(prices)
+                    final_price_info.append(f"{avg_price:.2f} INR/kg (Average)")
+                    if quality_grade:
+                        final_price_info[-1] += f" (Adjusted for Grade {quality_grade})"
+                    
+                    for i, (price, data) in enumerate(prices[:3], 1):  # Show top 3 sources
+                        source = data.get("SOURCE", "Unknown")
+                        date = data.get("DATE", "N/A")
+                        final_price_info.append(f"  Source {i}: {price:.2f} INR/kg | {source} | {date}")
+
+            # Process price ranges
+            elif parsed_data["ranges"]:
+                ranges = []
+                for range_data in parsed_data["ranges"]:
+                    try:
+                        min_p = float(re.sub(r"[^\d.]", "", range_data["MIN_PRICE_KG"]))
+                        max_p = float(re.sub(r"[^\d.]", "", range_data["MAX_PRICE_KG"]))
+                        if quality_grade:
+                            min_p *= self.QUALITY_PRICE_FACTORS.get(quality_grade, 1.0)
+                            max_p *= self.QUALITY_PRICE_FACTORS.get(quality_grade, 1.0)
+                        ranges.append((min_p, max_p, range_data))
+                    except (ValueError, KeyError):
+                        continue
+                
+                if ranges:
+                    avg_min = sum(r[0] for r in ranges) / len(ranges)
+                    avg_max = sum(r[1] for r in ranges) / len(ranges)
+                    final_price_info.append(f"{avg_min:.2f} - {avg_max:.2f} INR/kg (Range)")
+                    if quality_grade:
+                        final_price_info[-1] += f" (Adjusted for Grade {quality_grade})"
+                    
+                    for i, (min_p, max_p, data) in enumerate(ranges[:3], 1):  # Show top 3 sources
+                        source = data.get("SOURCE", "Unknown")
+                        date = data.get("DATE", "N/A")
+                        final_price_info.append(f"  Source {i}: {min_p:.2f}-{max_p:.2f} INR/kg | {source} | {date}")
+
+            # Add latest date information
+            if parsed_data["latest_date"]:
+                final_price_info.append(f"Latest Data Date: {parsed_data['latest_date']}")
+            elif parsed_data["prices"] or parsed_data["ranges"]:
+                dates = []
+                for price in parsed_data["prices"]:
+                    if "DATE" in price:
+                        dates.append(price["DATE"])
+                for range_data in parsed_data["ranges"]:
+                    if "DATE" in range_data:
+                        dates.append(range_data["DATE"])
+                if dates:
+                    latest_date = max(dates, key=lambda d: datetime.strptime(d, "%Y-%m-%d") if "-" in d else d)
+                    final_price_info.append(f"Latest Data Date: {latest_date}")
+
+            return "\n".join(final_price_info)
             
         except Exception as e:
             return f"Error during price fetching: {str(e)}"
@@ -217,7 +278,6 @@ Overall Assessment: [A brief one-sentence summary of the quality]
         """Formats the price and quality results into a clean, readable output."""
         output = []
         
-        # --- IMPROVEMENT: Better handling of error/not-available messages ---
         if "Error:" in price_results or "not available" in price_results:
             output.append(f"⚠️ {price_results}")
             if not quality_data:
@@ -225,20 +285,29 @@ Overall Assessment: [A brief one-sentence summary of the quality]
             return "\n".join(output)
 
         output.append("--- PRICE ESTIMATE ---")
-        price_parts = [p.strip() for p in price_results.split('|')]
         
-        price_line = price_parts[0]
-        if "Adjusted" in price_line:
-            output.append(f"💰 Adjusted Price: {price_line.split('(')[0].strip()}")
-            output.append(f"   (Based on Grade {quality_data.get('Grade', 'N/A')})")
-        else:
-             output.append(f"📊 Market Price/Range: {price_line}")
-
-        for part in price_parts[1:]:
-            output.append(f"   - {part}")
+        # Split the price results into lines
+        price_lines = [line.strip() for line in price_results.split('\n') if line.strip()]
+        
+        # The first line is the main price estimate
+        main_price_line = price_lines[0]
+        if "Average" in main_price_line:
+            output.append(f"💰 Average Price: {main_price_line.split('(')[0].strip()}")
+        elif "Range" in main_price_line:
+            output.append(f"📊 Price Range: {main_price_line.split('(')[0].strip()}")
+        
+        if quality_data:
+            output.append(f"   (Quality Adjustment: Grade {quality_data.get('Grade', 'N/A')})")
+        
+        # Add the individual source prices
+        for line in price_lines[1:]:
+            if line.startswith("Source"):
+                output.append(f"   - {line}")
+            elif line.startswith("Latest Data Date"):
+                output.append(f"\n📅 {line}")
 
         if not quality_data:
-             output.append("\nℹ️ Note: Provide an image for a more precise, quality-adjusted price estimate.")
+            output.append("\nℹ️ Note: Provide an image for a more precise, quality-adjusted price estimate.")
         
         if quality_data and "error" not in quality_data:
             output.append("\n--- AI QUALITY ASSESSMENT ---")
@@ -248,8 +317,8 @@ Overall Assessment: [A brief one-sentence summary of the quality]
         return "\n".join(output)
 
 def main():
-    print("--- Indian Agricultural Commodity Price Checker (v2.1) ---")
-    print("Now with robust fallback for fetching price ranges.")
+    print("--- Indian Agricultural Commodity Price Checker (v2.2) ---")
+    print("Now with multiple sources and date tracking.")
     
     fetcher = AgriculturalCommodityPriceFetcher()
     
