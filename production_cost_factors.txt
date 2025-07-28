@@ -1,0 +1,36 @@
+
+
+### **Cost Calculation Parameters**  
+
+| **Parameter**               | **Factors Considered**                                                                 |
+|-----------------------------|---------------------------------------------------------------------------------------|
+| **Crop Name**               | Type of crop (e.g., Wheat, Rice, Corn)                                               |
+| **Location**                | Region, climate, soil type, local prices                                             |
+| **Land Area**               | Size of farmland (acres/hectares)                                                    |
+| **Seed Quantity**           | Crop type, growth stage, season, sowing method                                       |
+| **Seed Price**              | Seed type (hybrid/GMO/organic), location-based pricing                               |
+| **Fertilizer Cost**         | Crop nutrient requirements, growth stage, soil quality                               |
+| **Pesticide Cost**          | Crop susceptibility to pests/diseases, growth stage, organic vs chemical             |
+| **Irrigation Cost**         | Rainfall levels, crop water needs, irrigation method (drip/sprinkler/flood)         |
+| **Electricity/Diesel Cost** | Pump usage, fuel/electricity rates, irrigation hours                                 |
+| **Farming Duration**        | Crop type (short-term vs long-term), growth cycle                                    |
+| **Daily Wage per Worker**   | Location-based labor rates, skill level required                                     |
+| **Number of Workers**       | Labor intensity per crop stage (sowing, weeding, harvesting)                         |
+| **Total Labor Days**        | Crop type, farming operations (land prep, planting, harvesting)                      |
+| **Land Preparation Cost**   | Tilling, plowing, machinery/rental costs                                            |
+| **Transport Cost**          | Distance to market, crop type (perishable vs non-perishable)                         |
+
+---
+
+### **Yield Estimation Parameters**  
+
+| **Parameter**               | **Factors Considered**                                                                 |
+|-----------------------------|---------------------------------------------------------------------------------------|
+| **Crop Type**               | High-yield vs traditional varieties                                                  |
+| **Season**                  | Kharif/Rabi/Zaid (India), Spring/Summer/Fall (Global)                                |
+| **Soil Quality**            | Fertility, pH levels, organic matter                                                |
+| **Location & Climate**      | Temperature, rainfall, sunlight exposure                                            |
+| **Weather Conditions**      | Droughts, floods, storms affecting growth                                           |
+| **Farming Efforts**         | Precision farming, manual vs mechanized, pest/disease control                      |
+| **Historical Yield Data**   | Previous crop performance in the region                                             |
+
