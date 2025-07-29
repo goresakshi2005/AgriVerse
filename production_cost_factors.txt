@@ -6,7 +6,7 @@
 |-----------------------------|---------------------------------------------------------------------------------------|
 | **Crop Name**               | Type of crop (e.g., Wheat, Rice, Corn)                                               |
 | **Location**                | Region, climate, soil type, local prices                                             |
-| **Land Area**               | Size of farmland (acres/hectares)                                                    |
+| **Land Area**               | Size of farmland (acres)                                                             |
 | **Seed Quantity**           | Crop type, growth stage, season, sowing method                                       |
 | **Seed Price**              | Seed type (hybrid/GMO/organic), location-based pricing                               |
 | **Fertilizer Cost**         | Crop nutrient requirements, growth stage, soil quality                               |
